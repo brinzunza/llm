@@ -1,0 +1,37 @@
+{
+  "model": {
+    "vocab_size": 10000,
+    "d_model": 512,
+    "n_heads": 8,
+    "n_layers": 8,
+    "max_seq_len": 256,
+    "dropout": 0.1
+  },
+  "training": {
+    "learning_rate": 5e-4,
+    "weight_decay": 0.01,
+    "epochs": 5,
+    "batch_size": 4,
+    "max_seq_length": 256,
+    "log_interval": 5,
+    "save_interval": 1,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 50,
+    "checkpoint_dir": "./models/checkpoints",
+    "log_dir": "./models/logs"
+  },
+  "data": {
+    "train_split": 0.8,
+    "val_split": 0.1,
+    "test_split": 0.1,
+    "max_length": 256,
+    "tokenizer_vocab_size": 10000
+  },
+  "evaluation": {
+    "batch_size": 8,
+    "generation_max_length": 50,
+    "generation_temperature": 0.8,
+    "generation_top_k": 20,
+    "generation_top_p": 0.9
+  }
+}
