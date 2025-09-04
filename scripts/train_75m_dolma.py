@@ -52,7 +52,7 @@ def verify_common_crawl_dataset():
 def main():
     parser = argparse.ArgumentParser(description='Train 75M LLM on Common Crawl dataset')
     parser.add_argument('--config', type=str, 
-                       default='configs/75m_dolma_config.json',
+                       default='../configs/75m_dolma_config.json',
                        help='Configuration file path')
     parser.add_argument('--resume', type=str, default=None,
                        help='Resume training from checkpoint')
