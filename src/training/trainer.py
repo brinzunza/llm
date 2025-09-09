@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -129,12 +130,12 @@ class LLMTrainer:
             
             # Forward pass with mixed precision
             if self.use_mixed_precision:
-                with autocast():
+                with autocast('cuda'):
                     logits, loss = self.model(batch, batch)
-                    loss = loss / self.gradient_accumulation_steps
+                    loss = loss.mean() / self.gradient_accumulation_steps
             else:
                 logits, loss = self.model(batch, batch)
-                loss = loss / self.gradient_accumulation_steps
+                loss = loss.mean() / self.gradient_accumulation_steps
             
             # Backward pass
             if self.use_mixed_precision:
