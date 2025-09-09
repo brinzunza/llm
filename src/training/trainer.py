@@ -3,6 +3,9 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import autocast, GradScaler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 import math
 import time
 import os
@@ -17,13 +20,24 @@ class LLMTrainer:
         self.val_loader = val_loader
         self.config = config
         
-        # Device setup
+        # Multi-GPU setup
+        self.use_multi_gpu = torch.cuda.device_count() > 1
+        self.world_size = torch.cuda.device_count() if self.use_multi_gpu else 1
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model.to(self.device)
+        
+        # Setup model for multi-GPU or single GPU
+        if self.use_multi_gpu:
+            print(f"Using {self.world_size} GPUs for training")
+            # Use DataParallel for simpler multi-GPU setup (no distributed training setup required)
+            self.model = nn.DataParallel(model)
+            self.model.to(self.device)
+        else:
+            print(f"Using single device: {self.device}")
+            self.model.to(self.device)
         
         # Optimizer
         self.optimizer = AdamW(
-            model.parameters(),
+            self.model.parameters(),
             lr=config['learning_rate'],
             weight_decay=config['weight_decay'],
             betas=(0.9, 0.999)
@@ -64,7 +78,38 @@ class LLMTrainer:
         os.makedirs(config['log_dir'], exist_ok=True)
         
         print(f"Training on device: {self.device}")
-        print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        if self.use_multi_gpu:
+            print(f"Effective batch size with {self.world_size} GPUs: {config['batch_size'] * self.world_size}")
+            for i in range(torch.cuda.device_count()):
+                print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+        
+        self._log_training_setup()
+    
+    def _log_training_setup(self):
+        """Log training setup information"""
+        setup_info = {
+            'device': str(self.device),
+            'multi_gpu': self.use_multi_gpu,
+            'world_size': self.world_size,
+            'cuda_available': torch.cuda.is_available(),
+            'gpu_count': torch.cuda.device_count()
+        }
+        
+        print("\n=== Training Setup ===")
+        if torch.cuda.is_available():
+            if self.use_multi_gpu:
+                print(f"✅ Multi-GPU training enabled ({self.world_size} GPUs)")
+                print("   This will automatically distribute batches across GPUs")
+            else:
+                print("✅ Single GPU training enabled")
+        else:
+            print("ℹ️  CPU training (no CUDA GPUs detected)")
+            print("   Consider using a GPU for faster training")
+        
+        print(f"   Gradient accumulation steps: {self.gradient_accumulation_steps}")
+        print(f"   Mixed precision: {self.use_mixed_precision}")
+        print("=" * 25)
     
     def train_epoch(self):
         """Train for one epoch"""
@@ -168,16 +213,21 @@ class LLMTrainer:
     
     def save_checkpoint(self, is_best=False):
         """Save model checkpoint"""
+        # Handle DataParallel models - save the underlying model state
+        model_state_dict = self.model.module.state_dict() if self.use_multi_gpu else self.model.state_dict()
+        
         checkpoint = {
             'epoch': self.current_epoch,
             'global_step': self.global_step,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
-            'config': self.config
+            'config': self.config,
+            'use_multi_gpu': self.use_multi_gpu,
+            'world_size': self.world_size
         }
         
         # Save regular checkpoint
@@ -197,7 +247,12 @@ class LLMTrainer:
         """Load model checkpoint"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        # Handle DataParallel models - load into the underlying model
+        if self.use_multi_gpu:
+            self.model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
@@ -207,15 +262,53 @@ class LLMTrainer:
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
         
+        # Handle backward compatibility for checkpoints without multi-GPU info
+        checkpoint_multi_gpu = checkpoint.get('use_multi_gpu', False)
+        checkpoint_world_size = checkpoint.get('world_size', 1)
+        
+        if checkpoint_multi_gpu != self.use_multi_gpu:
+            print(f"Warning: Checkpoint was saved with multi_gpu={checkpoint_multi_gpu}, "
+                  f"but current setup is multi_gpu={self.use_multi_gpu}")
+        
         print(f"Checkpoint loaded from {checkpoint_path}")
+        print(f"Loaded model was trained on {checkpoint_world_size} GPU(s), "
+              f"current setup uses {self.world_size} GPU(s)")
     
     def calculate_perplexity(self, loss):
         """Calculate perplexity from loss"""
         return math.exp(loss)
     
+    def _print_device_info(self):
+        """Print comprehensive device information"""
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 1:
+                print(f"💪 TRAINING WITH {gpu_count} GPUs")
+                for i in range(gpu_count):
+                    gpu_name = torch.cuda.get_device_name(i)
+                    gpu_memory = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                    print(f"   • GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
+                print(f"   • Effective batch size: {self.config['batch_size'] * gpu_count}")
+            else:
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                print(f"🎯 TRAINING WITH 1 GPU")
+                print(f"   • {gpu_name} ({gpu_memory:.1f}GB)")
+        else:
+            print("🖥️  TRAINING WITH CPU")
+            print("   • No CUDA GPUs detected - using CPU")
+            print("   • Consider using GPU for faster training")
+        
+        print(f"   • Mixed precision: {'✅ Enabled' if self.use_mixed_precision else '❌ Disabled'}")
+        print(f"   • Gradient accumulation: {self.gradient_accumulation_steps} steps")
+        print("="*60)
+    
     def train(self):
         """Main training loop"""
-        print("Starting training...")
+        print("\n" + "="*60)
+        print("🚀 STARTING TRAINING")
+        print("="*60)
+        self._print_device_info()
         start_time = time.time()
         
         for epoch in range(self.current_epoch, self.config['epochs']):
