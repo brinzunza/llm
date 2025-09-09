@@ -33,7 +33,7 @@ class MultiHeadAttention(nn.Module):
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
         
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
+            scores = scores.masked_fill(mask == 0, -1e4)
             
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)

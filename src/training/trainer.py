@@ -153,13 +153,14 @@ class LLMTrainer:
         """Validate the model"""
         self.model.eval()
         total_loss = 0
-        num_batches = len(self.val_loader)
+        num_batches = 0
         
         with torch.no_grad():
             for batch in self.val_loader:
                 batch = batch.to(self.device)
                 logits, loss = self.model(batch, batch)
                 total_loss += loss.item()
+                num_batches += 1
         
         avg_loss = total_loss / num_batches
         self.val_losses.append(avg_loss)
