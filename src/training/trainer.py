@@ -208,6 +208,10 @@ class LLMTrainer:
                 total_loss += loss.item()
                 num_batches += 1
         
+        if num_batches == 0:
+            print("Warning: No validation batches found. Skipping validation.")
+            return float('inf')
+        
         avg_loss = total_loss / num_batches
         self.val_losses.append(avg_loss)
         return avg_loss
